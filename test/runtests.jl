@@ -29,6 +29,7 @@ struct _DummyModel <: T.Model end
     include("test_scripting.jl")
     include("test_injectable_io.jl")
     include("test_clipboard.jl")
+    include("test_pty_reap.jl")
     include("test_animation.jl")
     include("test_tokenizers.jl")
     include("test_style.jl")
