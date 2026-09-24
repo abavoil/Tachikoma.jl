@@ -38,12 +38,19 @@ mutable struct PTY
     hproc::Ptr{Cvoid}        # child process HANDLE
     hin::Ptr{Cvoid}          # write end of the console's input pipe (parent → child)
     hout::Ptr{Cvoid}         # read end of the console's output pipe (child → parent)
+    reaped::Bool             # child reaped via waitpid (guards the one-shot reap in pty_alive)
 end
 
 # Keep the 8-argument form the POSIX paths construct.
 PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data) =
     PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data,
-        C_NULL, C_NULL, C_NULL, C_NULL)
+        C_NULL, C_NULL, C_NULL, C_NULL, false)
+
+# 12-argument form used by the ConPTY backend (see conpty.jl).
+PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data,
+    hpcon, hproc, hin, hout) =
+    PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data,
+        hpcon, hproc, hin, hout, false)
 
 """Whether this PTY is backed by a Windows pseudo-console rather than a POSIX pty."""
 _is_conpty(pty::PTY) = pty.hpcon != C_NULL
@@ -86,6 +93,8 @@ end
 
 # EAGAIN / EWOULDBLOCK — non-blocking read returns this when no data available
 const _EAGAIN = @static Sys.isapple() ? Cint(35) : Cint(11)
+# ECHILD — waitpid found no child to wait on (already reaped elsewhere)
+const _ECHILD = @static Sys.isapple() ? Cint(10) : Cint(10)
 
 # ── posix_spawn constants ────────────────────────────────────────────
 const _POSIX_SPAWN_SETSID = @static Sys.isapple() ? Cshort(0x0400) : Cshort(0x0080)
@@ -425,23 +434,30 @@ end
 Check if the child process is still running (non-blocking waitpid).
 """
 function pty_alive(pty::PTY)
-    pty.alive || return false
     if _is_conpty(pty)
-        pty.alive = _conpty_alive(pty)
+        pty.alive = pty.alive && _conpty_alive(pty)
         return pty.alive
     end
     # In-process PTYs (child_pid == 0) have no child to wait on;
     # waitpid(0) would reap unrelated process-group children.
     pty.child_pid <= 0 && return pty.alive
     status = Ref{Cint}(0)
-    # WNOHANG = 1
-    ret = ccall(:waitpid, Cint, (Cint, Ptr{Cint}, Cint),
-                pty.child_pid, status, Cint(1))
-    if ret == pty.child_pid
-        pty.alive = false
-        return false
+    # WNOHANG = 1. Keep reaping even after the reader task observed EOF or a
+    # read error and set alive=false: without this the exited child lingers
+    # as a zombie until the parent process exits, because nothing else
+    # waitpid()s it. The reaped flag makes the reap one-shot; ECHILD means
+    # another path (e.g. pty_close!) already got there.
+    if !pty.reaped
+        ret = ccall(:waitpid, Cint, (Cint, Ptr{Cint}, Cint),
+                    pty.child_pid, status, Cint(1))
+        if ret == pty.child_pid
+            pty.alive = false
+            pty.reaped = true
+        elseif ret == -1 && Base.Libc.errno() == _ECHILD
+            pty.reaped = true
+        end
     end
-    true
+    return pty.alive
 end
 
 """
