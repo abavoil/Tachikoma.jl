@@ -367,6 +367,43 @@
         @test true
     end
 
+    @testset "Modal with styled spans and a link" begin
+        key_s = T.Style(bold = true)
+        link_s = T.Style(underline = true, hyperlink = "https://example.org")
+        msg = [
+            [T.Span("Ctrl+Q", key_s), T.Span("  quit", T.Style())],
+            [T.Span("docs: ", T.Style()), T.Span("example.org", link_s)],
+        ]
+        modal = T.Modal(title = "Help", message = msg, confirm_label = "OK", cancel_label = "")
+        @test modal.message isa Vector{Vector{T.Span}}
+        buf = T.Buffer(T.Rect(1, 1, 60, 20))
+        T.render(modal, T.Rect(1, 1, 60, 20), buf)
+        rows = [String([buf.content[T.buf_index(buf, x, y)].char for x in 1:60]) for y in 1:20]
+        y = findfirst(r -> occursin("Ctrl+Q  quit", r), rows)
+        @test y !== nothing
+        x = findfirst("Ctrl+Q", rows[y]).start
+        @test buf.content[T.buf_index(buf, x, y)].style.bold
+        @test !buf.content[T.buf_index(buf, x + 8, y)].style.bold   # "quit" is not bold
+        yl = findfirst(r -> occursin("example.org", r), rows)
+        xl = findfirst("example.org", rows[yl]).start
+        @test buf.content[T.buf_index(buf, xl, yl)].style.hyperlink == "https://example.org"
+
+        # A plain String still renders in text_style, and assignment accepts both forms.
+        modal.message = SubString("line one\nline two", 1)
+        @test modal.message == "line one\nline two"
+        modal.message = msg
+        @test modal.message isa Vector{Vector{T.Span}}
+    end
+
+    @testset "Modal message wider than the area stays inside the border" begin
+        modal = T.Modal(message = [[T.Span("x"^80, T.Style())]], confirm_label = "OK", cancel_label = "")
+        buf = T.Buffer(T.Rect(1, 1, 30, 10))
+        T.render(modal, T.Rect(1, 1, 30, 10), buf)
+        rows = [String([buf.content[T.buf_index(buf, x, y)].char for x in 1:30]) for y in 1:10]
+        @test any(r -> occursin("xxx", r), rows)
+        @test all(r -> count(==('┃'), r) in (0, 2), rows)   # side borders intact on every row
+    end
+
     @testset "Canvas" begin
         c = T.Canvas(10, 5)
         @test size(c.dots) == (10, 5)

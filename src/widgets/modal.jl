@@ -4,7 +4,9 @@
 
 mutable struct Modal
     title::String
-    message::String                # can contain newlines
+    # A String (may contain newlines; drawn in `text_style`), or one Vector{Span} per line, each span
+    # in its own Style. A span whose Style has `hyperlink` set is a link (OSC 8).
+    message::Union{String, Vector{Vector{Span}}}
     confirm_label::String
     cancel_label::String
     selected::Symbol               # :confirm or :cancel
@@ -34,22 +36,37 @@ function Modal(;
     dim_style=tstyle(:text_dim),
     tick=nothing,
 )
-    Modal(title, message, confirm_label, cancel_label, selected,
+    Modal(title, _modal_message(message), confirm_label, cancel_label, selected,
           border_style, title_style, text_style,
           confirm_style, cancel_style, dim_style, tick,
           Rect(), Rect())
 end
 
+_modal_message(m::AbstractString) = String(m)
+_modal_message(m::AbstractVector) = Vector{Span}[Vector{Span}(line) for line in m]
+
+# `modal.message = …` takes the same forms as the constructor.
+function Base.setproperty!(modal::Modal, name::Symbol, v)
+    name === :message && (v = _modal_message(v))
+    setfield!(modal, name, convert(fieldtype(Modal, name), v))
+end
+
 focusable(::Modal) = true
+
+# The message as lines of spans.
+_modal_lines(modal::Modal) = modal.message isa String ?
+    [Span[Span(String(l), modal.text_style)] for l in Base.split(modal.message, '\n')] :
+    modal.message
+
+_spans_display_width(line::Vector{Span}) = sum(s -> textwidth(s.content), line; init = 0)
 
 function render(modal::Modal, area::Rect, buf::Buffer)
     (area.width < 10 || area.height < 5) && return
 
-    # Parse message lines
-    lines = Base.split(modal.message, '\n')
+    lines = _modal_lines(modal)
 
     # Calculate modal dimensions
-    msg_width = maximum(length.(lines); init=10)
+    msg_width = maximum(_spans_display_width.(lines); init=10)
     cancel_w = isempty(modal.cancel_label) ? 0 : length(modal.cancel_label) + 6  # "[ label ]"
     confirm_w = isempty(modal.confirm_label) ? 0 : length(modal.confirm_label) + 6
     btn_gap = (cancel_w > 0 && confirm_w > 0) ? 2 : 0
@@ -102,8 +119,11 @@ function render(modal::Modal, area::Rect, buf::Buffer)
     for (i, line) in enumerate(lines)
         y = msg_y + i - 1
         y > bottom(content) - 2 && break
-        lx = center(content, length(line), 1).x
-        set_string!(buf, lx, y, String(line), modal.text_style)
+        x = center(content, min(_spans_display_width(line), content.width), 1).x
+        for span in line
+            x > right(content) && break
+            x = set_string!(buf, x, y, span.content, span.style; max_x = right(content))
+        end
     end
 
     # Render buttons at bottom
