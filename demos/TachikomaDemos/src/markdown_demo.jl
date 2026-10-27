@@ -6,7 +6,7 @@
 # Mode 3: Style preset picker
 #
 # Ctrl+M / F1-F3: switch modes   Tab: switch focus (mode 2)
-# 1-4: style presets (mode 3)    Esc: quit
+# 1-4: style presets (mode 3)    ?: help (a Modal of styled spans)    Esc: quit
 # ═══════════════════════════════════════════════════════════════════════
 
 const _MD_SAMPLE = """
@@ -190,13 +190,47 @@ end
                     border_style=tstyle(:border),
                     title_style=tstyle(:title)),
         tick=0)
+
+    # Help dialog (?): a Modal whose message is styled spans
+    help::Bool = false
+    help_modal::Modal = _md_help_modal()
+end
+
+function _md_help_modal()
+    key = tstyle(:accent, bold=true)
+    desc = tstyle(:text)
+    row(k, d) = [Span(rpad(k, 12), key), Span(d, desc)]
+    Modal(; title="Markdown Demo", confirm_label="Close", cancel_label="",
+        selected=:confirm, align=:left,
+        border_style=tstyle(:accent, bold=true), title_style=tstyle(:accent, bold=true),
+        message=[
+            row("F1 F2 F3", "README, live editor, style presets"),
+            row("↑ ↓ PgUp", "scroll"),
+            row("Tab", "editor ↔ preview (F2)"),
+            row("1-4", "style preset (F3)"),
+            row("Esc", "quit"),
+            Span[],
+            [Span("Docs  ", tstyle(:text_dim)),
+             Span("kahliburke.github.io/Tachikoma.jl",
+                  tstyle(:primary, underline=true,
+                         hyperlink="https://kahliburke.github.io/Tachikoma.jl/dev/"))],
+        ])
 end
 
 should_quit(m::MarkdownDemoModel) = m.quit
 
+# `?` opens help everywhere except while typing in the editor.
+_md_help_key(m::MarkdownDemoModel, evt::KeyEvent) =
+    evt.key == :char && evt.char == '?' && !(m.mode == 2 && m.focus == 1)
+
 # ── Update ──────────────────────────────────────────────────────────
 
 function update!(m::MarkdownDemoModel, evt::KeyEvent)
+    if m.help
+        (handle_key!(m.help_modal, evt) in (:confirm, :cancel) || _md_help_key(m, evt)) && (m.help = false)
+        return
+    end
+    _md_help_key(m, evt) && (m.help = true; return)
     evt.key == :escape && (m.quit = true; return)
 
     # Mode switching
@@ -253,6 +287,10 @@ function _update_styles!(m::MarkdownDemoModel, evt::KeyEvent)
 end
 
 function update!(m::MarkdownDemoModel, evt::MouseEvent)
+    if m.help
+        handle_mouse!(m.help_modal, evt) in (:confirm, :cancel) && (m.help = false)
+        return
+    end
     @match m.mode begin
         1 => handle_mouse!(m.md_pane, evt)
         2 => handle_mouse!(m.preview_pane, evt)
@@ -289,14 +327,16 @@ function view(m::MarkdownDemoModel, f::Frame)
 
     # Footer
     footer_text = @match m.mode begin
-        1 => "  [↑↓/PgUp/PgDn]scroll [Ctrl+M/F1-F3]mode [Esc]quit "
-        2 => "  [Tab]focus [↑↓]scroll/edit [Ctrl+M/F1-F3]mode [Esc]quit "
-        _ => "  [1-4]preset [↑↓/PgUp/PgDn]scroll [Ctrl+M/F1-F3]mode [Esc]quit "
+        1 => "  [↑↓/PgUp/PgDn]scroll [Ctrl+M/F1-F3]mode [?]help [Esc]quit "
+        2 => "  [Tab]focus [↑↓]scroll/edit [Ctrl+M/F1-F3]mode [?]help [Esc]quit "
+        _ => "  [1-4]preset [↑↓/PgUp/PgDn]scroll [Ctrl+M/F1-F3]mode [?]help [Esc]quit "
     end
     render(StatusBar(
         left=[Span(footer_text, tstyle(:text_dim))],
         right=[Span("mode $(m.mode) ", tstyle(:text_dim))],
     ), footer_area, buf)
+
+    m.help && render(m.help_modal, f.area, buf)
 end
 
 function _render_mode_tabs!(buf, area, active, tick)

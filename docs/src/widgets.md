@@ -536,6 +536,23 @@ modal = Modal(; title="Delete?", message="This cannot be undone.",
 render(modal, area, buf)
 ```
 
+`message` can also be a vector of lines, each a `Vector{Span}`, so parts of a line can be styled differently. A span whose `Style` has `hyperlink` set is a clickable link in terminals that support OSC 8. Lines are centered one by one; `align=:left` keeps them left-aligned in a centered block, which suits key lists:
+
+<!-- tachi:widget modal_spans w=44 h=9 -->
+```julia
+key = tstyle(:accent, bold=true)
+modal = Modal(; title="Keys", confirm_label="Close", cancel_label="", selected=:confirm,
+    align=:left,
+    message=[
+        [Span("Tab   ", key), Span("next field", tstyle(:text))],
+        [Span("Esc   ", key), Span("close", tstyle(:text))],
+        [Span("Docs: ", tstyle(:text_dim)),
+         Span("Tachikoma.jl", tstyle(:primary, underline=true,
+              hyperlink="https://kahliburke.github.io/Tachikoma.jl/dev/"))],
+    ])
+render(modal, area, buf)
+```
+
 ## Data Visualization
 
 ### Sparkline
@@ -899,7 +916,7 @@ container = Container(
 
 ### MarkdownPane
 
-Scrollable CommonMark viewer with styled headings, bold/italic, inline code, code blocks with syntax highlighting, lists, block quotes, and horizontal rules. Requires the markdown extension (`enable_markdown()` or `using CommonMark`).
+Scrollable CommonMark viewer with styled headings, bold/italic, inline code, code blocks with syntax highlighting, lists, block quotes, tables, and horizontal rules. Requires the markdown extension (`enable_markdown()` or `using CommonMark`).
 
 <!-- tachi:widget markdownpane_basic w=50 h=12
 pane = MarkdownPane("# Hello\n\n**Bold**, *italic*, `code`.\n\n- Item 1\n- Item 2";
@@ -910,6 +927,23 @@ render(pane, area, buf)
 enable_markdown()
 pane = MarkdownPane("# Hello\n\n**Bold**, *italic*, `code`.\n\n- Item 1\n- Item 2";
     block=Block(title="Docs"))
+render(pane, area, buf)
+```
+
+Tables keep each column's alignment (`:---`, `:---:`, `---:`). Columns are sized to fit the pane, widest first, and a cell that does not fit is cut with `…`:
+
+<!-- tachi:widget markdownpane_table w=50 h=8
+pane = MarkdownPane("| Name | Count | Status |\n|:-----|------:|:------:|\n| alpha | 1 | **ok** |\n| beta | 22 | `retry` |";
+    block=Block(title="Table"), width=48)
+render(pane, area, buf)
+-->
+```julia
+pane = MarkdownPane("""
+    | Name  | Count | Status  |
+    |:------|------:|:-------:|
+    | alpha |     1 | **ok**  |
+    | beta  |    22 | `retry` |
+    """; block=Block(title="Table"))
 render(pane, area, buf)
 ```
 
