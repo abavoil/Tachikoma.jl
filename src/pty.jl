@@ -63,7 +63,7 @@ LineEdit's later `raw!()` call is a no-op (preventing any possible
 blocking on tcsetattr).
 """
 function _cfmakeraw!(fd::Cint)
-    termios = zeros(UInt8, 128)  # generous; macOS ≈72 bytes, Linux ≈60
+    termios = _termios_buffer()
     GC.@preserve termios begin
         ret = ccall(:tcgetattr, Cint, (Cint, Ptr{UInt8}), fd, pointer(termios))
         ret == 0 || return

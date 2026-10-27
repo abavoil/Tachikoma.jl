@@ -206,6 +206,14 @@ function render!(f::Frame, widget, rect::Rect)
     render(widget, rect, f.buffer)
 end
 
+# ── termios buffers ───────────────────────────────────────────────────
+
+# `struct termios` is opaque here, so it is held in a byte buffer. Its size is 72 bytes on macOS
+# (`tcflag_t` and `speed_t` are `unsigned long`) and 60 on glibc; `tcgetattr` writes all of it, so a
+# buffer smaller than that is overrun into whatever follows it on the heap. 128 covers both.
+const _TERMIOS_BUFSIZE = 128
+_termios_buffer() = zeros(UInt8, _TERMIOS_BUFSIZE)
+
 # ── Pixel helpers (no heavy deps) ─────────────────────────────────────
 
 # Pixels per terminal cell (w × h). Auto-detected at TUI startup, fallback 8×16.
@@ -291,7 +299,7 @@ function _detect_sixel_geometry!()
 
     try
         # Save terminal settings
-        old_termios = zeros(UInt8, 64)
+        old_termios = _termios_buffer()
         ccall(:tcgetattr, Cint, (Cint, Ptr{UInt8}), tty_fd, old_termios)
 
         # Set raw mode
@@ -1240,7 +1248,7 @@ function _start_remote_input!(path::String)
 
     # Save terminal settings and switch to raw mode so we get individual
     # keypresses (no line buffering, no echo on the remote TTY).
-    old_termios = zeros(UInt8, 64)
+    old_termios = _termios_buffer()
     ccall(:tcgetattr, Cint, (Cint, Ptr{UInt8}), fd, old_termios)
     raw_termios = copy(old_termios)
     ccall(:cfmakeraw, Cvoid, (Ptr{UInt8},), raw_termios)

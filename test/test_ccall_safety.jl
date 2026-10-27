@@ -65,3 +65,28 @@
         @test true  # skip on Windows
     end
 end
+
+@testset "termios buffer holds everything tcgetattr writes" begin
+    @static if !Sys.iswindows()
+        pty, slave = Tachikoma.pty_pair()
+        try
+            # tcgetattr writes the same bytes whatever the buffer held, so a byte that differs from
+            # the fill in either of two runs was written by it.
+            function after_tcgetattr(fill::UInt8)
+                b = fill!(zeros(UInt8, 256), fill)
+                @test ccall(:tcgetattr, Cint, (Cint, Ptr{UInt8}), slave, b) == 0
+                return b
+            end
+            a, b = after_tcgetattr(0xaa), after_tcgetattr(0x55)
+            written = something(findlast(i -> a[i] != 0xaa || b[i] != 0x55, eachindex(a)), 0)
+            @test written > 0
+            @test Tachikoma._TERMIOS_BUFSIZE >= written
+            @test length(Tachikoma._termios_buffer()) == Tachikoma._TERMIOS_BUFSIZE
+        finally
+            ccall(:close, Cint, (Cint,), slave)
+            Tachikoma.pty_close!(pty)
+        end
+    else
+        @test true  # skip on Windows
+    end
+end
