@@ -205,6 +205,32 @@ end
         @test any(s -> s.content == "code", all_spans)
         @test any(s -> s.content == "emph" && s.style.dim, all_spans)
     end
+
+    @testset "Tables" begin
+        _line_width(line) = sum(s -> textwidth(s.content), line; init = 0)
+        md = """
+        | name | count | note |
+        |:-----|------:|:----:|
+        | alpha | 1 | first |
+        | b | 22 | **bold** |
+        """
+        lines = filter(!_is_blank_line_test, T.markdown_to_spans(md, 80))
+        texts = [join(s.content for s in l) for l in lines]
+        @test length(lines) == 4   # header, rule, two rows
+        @test occursin("name", texts[1]) && occursin("count", texts[1])
+        @test all(s -> s.style.bold, filter(s -> occursin("name", s.content), lines[1]))
+        @test occursin("┼", texts[2])
+        @test occursin("alpha", texts[3]) && occursin("first", texts[3])
+        @test any(s -> s.content == "bold" && s.style.bold, lines[4])
+        @test length(unique(_line_width.(lines))) == 1   # every row is the same width
+        # Right-aligned column: the shorter number is padded on the left.
+        @test occursin(" 1 │", texts[3]) && occursin("22 │", texts[4])
+
+        narrow = filter(!_is_blank_line_test, T.markdown_to_spans(md, 16))
+        @test length(narrow) == 4
+        @test all(l -> _line_width(l) <= 16, narrow)
+        @test any(l -> any(s -> occursin("…", s.content), l), narrow)
+    end
 end
 
 # ── MarkdownPane widget tests ──────────────────────────────────────

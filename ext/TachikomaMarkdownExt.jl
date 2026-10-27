@@ -102,6 +102,8 @@ function _handle_block!(ctx::WalkContext, node)
         _handle_list!(ctx, node)
     elseif t isa CommonMark.ThematicBreak
         _handle_hr!(ctx)
+    elseif t isa CommonMark.Table
+        _handle_table!(ctx, node)
     elseif t isa CommonMark.Document
         _walk_blocks!(ctx, node)
     else
@@ -261,6 +263,88 @@ function _handle_hr!(ctx::WalkContext)
     avail = ctx.width - _current_prefix_len(ctx)
     _push_line!(ctx, [Tachikoma.Span("─"^max(1, avail), ctx.hr)])
     _push_blank!(ctx)
+end
+
+# ── Table ────────────────────────────────────────────────────────────
+
+# Columns are sized to their widest cell and shrunk, widest first, until the row fits; a cell wider
+# than its column is cut with "…". Header rows are bold and ruled off from the body.
+function _handle_table!(ctx::WalkContext, node)
+    header_style = Tachikoma.Style(fg = ctx.text.fg, bold = true)
+    rows = Tuple{Bool,Vector{Tuple{Vector{Tachikoma.Span},Symbol}}}[]
+    for (n, entering) in node
+        (entering && n.t isa CommonMark.TableRow) || continue
+        cells = Tuple{Vector{Tachikoma.Span},Symbol}[]
+        header = false
+        c = n.first_child
+        while !CommonMark.isnull(c)
+            if c.t isa CommonMark.TableCell
+                header |= c.t.header
+                push!(cells, (_collect_inlines(ctx, c, c.t.header ? header_style : ctx.text), c.t.align))
+            end
+            c = c.nxt
+        end
+        push!(rows, (header, cells))
+    end
+    isempty(rows) && return
+
+    ncols = maximum(r -> length(r[2]), rows)
+    ncols == 0 && return
+    widths = zeros(Int, ncols)
+    for (_, cells) in rows, (j, (spans, _)) in enumerate(cells)
+        widths[j] = max(widths[j], _spans_width(spans))
+    end
+    sep = " │ "
+    avail = ctx.width - _current_prefix_len(ctx)
+    while sum(widths) + textwidth(sep) * (ncols - 1) > avail && maximum(widths) > 1
+        widths[argmax(widths)] -= 1
+    end
+
+    for (i, (header, cells)) in enumerate(rows)
+        line = Tachikoma.Span[]
+        for j in 1:ncols
+            j > 1 && push!(line, Tachikoma.Span(sep, ctx.hr))
+            spans, align = j <= length(cells) ? cells[j] : (Tachikoma.Span[], :left)
+            append!(line, _fit_cell(spans, widths[j], align, ctx.text))
+        end
+        _push_line!(ctx, line)
+        if header && (i == length(rows) || !rows[i + 1][1])
+            _push_line!(ctx, [Tachikoma.Span(join(("─"^w for w in widths), "─┼─"), ctx.hr)])
+        end
+    end
+    _push_blank!(ctx)
+end
+
+_spans_width(spans) = sum(s -> textwidth(s.content), spans; init = 0)
+
+# `spans` cut to `w` display columns (ending in "…" if cut) and padded to exactly `w` per `align`.
+function _fit_cell(spans::Vector{Tachikoma.Span}, w::Int, align::Symbol, pad_style::Tachikoma.Style)
+    out = spans
+    if _spans_width(spans) > w
+        out = Tachikoma.Span[]
+        budget = w - 1   # room for the ellipsis
+        for s in spans
+            budget <= 0 && break
+            sw = textwidth(s.content)
+            if sw <= budget
+                push!(out, s)
+                budget -= sw
+            else
+                cut = Tachikoma.truncate_to_width(s.content, budget; ellipsis = "")
+                isempty(cut) || push!(out, Tachikoma.Span(cut, s.style))
+                budget = 0
+            end
+        end
+        push!(out, Tachikoma.Span("…", isempty(out) ? pad_style : out[end].style))
+    end
+    gap = w - _spans_width(out)
+    gap <= 0 && return out
+    left = align === :right ? gap : align === :center ? gap ÷ 2 : 0
+    padded = Tachikoma.Span[]
+    left > 0 && push!(padded, Tachikoma.Span(" "^left, pad_style))
+    append!(padded, out)
+    gap - left > 0 && push!(padded, Tachikoma.Span(" "^(gap - left), pad_style))
+    return padded
 end
 
 # ── Inline collector ─────────────────────────────────────────────────
