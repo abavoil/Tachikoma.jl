@@ -38,12 +38,18 @@ mutable struct PTY
     hproc::Ptr{Cvoid}        # child process HANDLE
     hin::Ptr{Cvoid}          # write end of the console's input pipe (parent → child)
     hout::Ptr{Cvoid}         # read end of the console's output pipe (child → parent)
+    # The child's exit status has been collected (POSIX). After that its pid may belong to another
+    # process, so it is never waited on or signalled again.
+    reaped::Bool
 end
 
-# Keep the 8-argument form the POSIX paths construct.
+# Keep the 8-argument form the POSIX paths construct, and the 12-argument form conpty.jl constructs.
 PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data) =
     PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data,
         C_NULL, C_NULL, C_NULL, C_NULL)
+PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data, hpcon, hproc, hin, hout) =
+    PTY(master_fd, child_pid, rows, cols, alive, output, reader_task, on_data,
+        hpcon, hproc, hin, hout, false)
 
 """Whether this PTY is backed by a Windows pseudo-console rather than a POSIX pty."""
 _is_conpty(pty::PTY) = pty.hpcon != C_NULL
@@ -415,33 +421,51 @@ function pty_resize!(pty::PTY, rows::Int, cols::Int)
                 (Cint, Culong, Ptr{Cvoid}...),
                 pty.master_fd, _TIOCSWINSZ, pointer(ws))
     # Send SIGWINCH (28) to child process group (skip for in-process PTYs)
-    pty.child_pid > 0 && ccall(:kill, Cint, (Cint, Cint), -pty.child_pid, Cint(28))
+    pty.child_pid > 0 && !pty.reaped && ccall(:kill, Cint, (Cint, Cint), -pty.child_pid, Cint(28))
     nothing
 end
 
 """
     pty_alive(pty::PTY) → Bool
 
-Check if the child process is still running (non-blocking waitpid).
+Check if the child process is still running (non-blocking waitpid). Also reaps a child that has
+exited, including one whose exit the reader saw first as EOF, so it does not stay a zombie.
 """
 function pty_alive(pty::PTY)
-    pty.alive || return false
     if _is_conpty(pty)
+        pty.alive || return false
         pty.alive = _conpty_alive(pty)
         return pty.alive
     end
     # In-process PTYs (child_pid == 0) have no child to wait on;
     # waitpid(0) would reap unrelated process-group children.
     pty.child_pid <= 0 && return pty.alive
+    _reap!(pty) && (pty.alive = false)
+    return pty.alive
+end
+
+const _WNOHANG = Cint(1)
+const _ECHILD = Cint(10)   # same value on macOS, Linux and the BSDs
+
+# Collect the child's exit status if it has exited. Returns whether it has been reaped.
+function _reap!(pty::PTY)
+    pty.reaped && return true
     status = Ref{Cint}(0)
-    # WNOHANG = 1
-    ret = ccall(:waitpid, Cint, (Cint, Ptr{Cint}, Cint),
-                pty.child_pid, status, Cint(1))
-    if ret == pty.child_pid
-        pty.alive = false
-        return false
+    ret = ccall(:waitpid, Cint, (Cint, Ptr{Cint}, Cint), pty.child_pid, status, _WNOHANG)
+    if ret == pty.child_pid || (ret == -1 && Base.Libc.errno() == _ECHILD)
+        pty.reaped = true
     end
-    true
+    return pty.reaped
+end
+
+# Wait up to `timeout` seconds for the child to exit, yielding between checks.
+function _await_reap!(pty::PTY, timeout::Real)
+    deadline = time() + timeout
+    while !_reap!(pty)
+        time() >= deadline && return false
+        sleep(0.01)
+    end
+    return true
 end
 
 """
@@ -475,9 +499,9 @@ end
     pty_close!(pty::PTY)
 
 Close the PTY master fd, stop the reader task, send SIGHUP to the child
-(if any), and reap it.
+(if any), and reap it. A child still running after `grace` seconds gets SIGKILL.
 """
-function pty_close!(pty::PTY)
+function pty_close!(pty::PTY; grace::Real = 2.0)
     if _is_conpty(pty)
         # Stop the reader BEFORE closing the handles it polls: Windows reuses handle
         # values, so closing `hout` under a reader sitting in PeekNamedPipe/ReadFile can
@@ -498,11 +522,12 @@ function pty_close!(pty::PTY)
     if !istaskdone(pty.reader_task)
         try wait(pty.reader_task) catch end
     end
-    if pty.child_pid > 0
+    if pty.child_pid > 0 && !_reap!(pty)
         ccall(:kill, Cint, (Cint, Cint), pty.child_pid, Cint(1))  # SIGHUP
-        status = Ref{Cint}(0)
-        ccall(:waitpid, Cint, (Cint, Ptr{Cint}, Cint),
-              pty.child_pid, status, Cint(0))
+        if !_await_reap!(pty, grace)
+            ccall(:kill, Cint, (Cint, Cint), pty.child_pid, Cint(9))  # SIGKILL
+            _await_reap!(pty, grace)
+        end
     end
     pty.master_fd = Cint(-1)
     nothing

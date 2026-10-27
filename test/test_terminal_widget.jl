@@ -572,6 +572,37 @@ end
             end
             rm(parent; force=true, recursive=true)
         end
+
+        # A zombie still has a process-table entry, so kill(pid, 0) succeeds on it; once reaped it fails.
+        _exists(pid) = ccall(:kill, Cint, (Cint, Cint), pid, 0) == 0
+
+        @testset "a child that exits on its own is reaped after the reader sees EOF" begin
+            pty = T.pty_spawn(["true"])
+            pid = pty.child_pid
+            deadline = time() + 5.0
+            while pty.alive && time() < deadline   # the reader clears `alive` on EOF
+                sleep(0.01)
+            end
+            @test !pty.alive
+            while !pty.reaped && time() < deadline
+                T.pty_alive(pty)
+                sleep(0.01)
+            end
+            @test pty.reaped
+            @test !_exists(pid)
+            T.pty_close!(pty)
+        end
+
+        @testset "pty_close! kills a child that ignores SIGHUP, without blocking" begin
+            pty = T.pty_spawn(["sh", "-c", "trap '' HUP; exec sleep 30"])
+            pid = pty.child_pid
+            sleep(0.2)   # let the trap be installed before the hangup
+            t = time()
+            T.pty_close!(pty; grace = 0.5)
+            @test time() - t < 3.0
+            @test pty.reaped
+            @test !_exists(pid)
+        end
     end
 
     # ── with_terminal host stream guard ──────────────────────────────
