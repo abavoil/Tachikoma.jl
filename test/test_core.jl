@@ -395,6 +395,20 @@
         @test modal.message isa Vector{Vector{T.Span}}
     end
 
+    @testset "Modal align" begin
+        msg = [[T.Span("short", T.Style())], [T.Span("a much longer line", T.Style())]]
+        col(modal) = begin
+            buf = T.Buffer(T.Rect(1, 1, 60, 12))
+            T.render(modal, T.Rect(1, 1, 60, 12), buf)
+            rows = [String([buf.content[T.buf_index(buf, x, y)].char for x in 1:60]) for y in 1:12]
+            [findfirst(w, rows[findfirst(r -> occursin(w, r), rows)]).start for w in ("short", "a much")]
+        end
+        @test col(T.Modal(message = msg, cancel_label = ""))[1] > col(T.Modal(message = msg, cancel_label = ""))[2]
+        left = col(T.Modal(message = msg, cancel_label = "", align = :left))
+        @test left[1] == left[2]
+        @test_throws ArgumentError T.Modal(align = :right)
+    end
+
     @testset "Modal message wider than the area stays inside the border" begin
         modal = T.Modal(message = [[T.Span("x"^80, T.Style())]], confirm_label = "OK", cancel_label = "")
         buf = T.Buffer(T.Rect(1, 1, 30, 10))

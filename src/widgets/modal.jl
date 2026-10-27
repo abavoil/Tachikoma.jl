@@ -7,6 +7,7 @@ mutable struct Modal
     # A String (may contain newlines; drawn in `text_style`), or one Vector{Span} per line, each span
     # in its own Style. A span whose Style has `hyperlink` set is a link (OSC 8).
     message::Union{String, Vector{Vector{Span}}}
+    align::Symbol                  # :center (each line centered) or :left (lines left-aligned, block centered)
     confirm_label::String
     cancel_label::String
     selected::Symbol               # :confirm or :cancel
@@ -25,6 +26,7 @@ end
 function Modal(;
     title="Confirm",
     message="Are you sure?",
+    align=:center,
     confirm_label="OK",
     cancel_label="Cancel",
     selected=:cancel,
@@ -36,7 +38,8 @@ function Modal(;
     dim_style=tstyle(:text_dim),
     tick=nothing,
 )
-    Modal(title, _modal_message(message), confirm_label, cancel_label, selected,
+    align in (:center, :left) || throw(ArgumentError("Modal align must be :center or :left, got :$align"))
+    Modal(title, _modal_message(message), align, confirm_label, cancel_label, selected,
           border_style, title_style, text_style,
           confirm_style, cancel_style, dim_style, tick,
           Rect(), Rect())
@@ -116,10 +119,13 @@ function render(modal::Modal, area::Rect, buf::Buffer)
 
     # Render message lines
     msg_y = content.y + 1
+    block_w = maximum(_spans_display_width.(lines); init = 0)
+    block_x = center(content, min(block_w, content.width), 1).x
     for (i, line) in enumerate(lines)
         y = msg_y + i - 1
         y > bottom(content) - 2 && break
-        x = center(content, min(_spans_display_width(line), content.width), 1).x
+        x = modal.align === :left ? block_x :
+            center(content, min(_spans_display_width(line), content.width), 1).x
         for span in line
             x > right(content) && break
             x = set_string!(buf, x, y, span.content, span.style; max_x = right(content))
